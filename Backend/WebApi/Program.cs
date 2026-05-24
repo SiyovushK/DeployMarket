@@ -10,55 +10,70 @@ using Microsoft.AspNetCore.HttpOverrides;
 using WebApi.Handlers;
 using WebApi.Swagger;
 
-// Prevent ASP.NET from remapping JWT "sub" → ClaimTypes.NameIdentifier.
 JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ── Port (Render sets PORT env-var) ───────────────────────────────────────
+// ── Port (Render sets PORT env-var) ──────────────────────────────────────
 var port = Environment.GetEnvironmentVariable("PORT");
 if (!string.IsNullOrEmpty(port))
     builder.WebHost.UseUrls($"http://*:{port}");
 
-// ── Configuration (local overrides via appsettings.Local.json) ────────────
+// ── Configuration ────────────────────────────────────────────────────────
 builder.Configuration
     .AddJsonFile("appsettings.json")
     .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true)
-    .AddJsonFile("appsettings.Local.json", optional: true)
-    .AddEnvironmentVariables(); // Render env-vars override everything
+    .AddJsonFile("appsettings.Local.json", optional: true)  // local dev secrets
+    .AddEnvironmentVariables();                              // Render env-vars win
 
-// ── Connection string: env-var DATABASE_URL takes priority ───────────────
-var databaseUrl = Environment.GetEnvironmentVariable(
-    "postgresql://neondb_owner:npg_sZc3OLWy0HPV@ep-sweet-recipe-al53l4ci.c-3.eu-central-1.aws.neon.tech/neondb?sslmode=require");
+// ── Database connection string ────────────────────────────────────────────
+// Priority: DATABASE_URL env-var (Render) → appsettings.Local.json → appsettings.json
+var databaseUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
 if (!string.IsNullOrEmpty(databaseUrl))
+    builder.Configuration["ConnectionStrings:DefaultConnection"] = databaseUrl;
+
+// Convert PostgreSQL URI to Npgsql keyword=value format if needed
+// (handles both DATABASE_URL env-var from Render AND URI in appsettings.Local.json)
+static string ConvertToNpgsql(string raw)
 {
-    // Neon/Render provide "postgresql://user:pass@host/db?sslmode=require"
-    // Convert to Npgsql keyword=value format
-    var uri      = new Uri(databaseUrl);
+    if (!raw.StartsWith("postgresql://") && !raw.StartsWith("postgres://"))
+        return raw; // already keyword=value
+
+    var uri      = new Uri(raw);
     var userInfo = uri.UserInfo.Split(':');
-    var npgsql   = $"Host={uri.Host};Port={(uri.Port > 0 ? uri.Port : 5432)};" +
-                   $"Database={uri.AbsolutePath.TrimStart('/')};" +
-                   $"User Id={Uri.UnescapeDataString(userInfo[0])};" +
-                   $"Password={Uri.UnescapeDataString(userInfo.Length > 1 ? userInfo[1] : "")};" +
-                   $"Ssl Mode=Require;Trust Server Certificate=true";
-    builder.Configuration["ConnectionStrings:DefaultConnection"] = npgsql;
+    var dbName   = uri.AbsolutePath.TrimStart('/').Split('?')[0];
+    return $"Host={uri.Host};" +
+           $"Port={(uri.Port > 0 ? uri.Port : 5432)};" +
+           $"Database={dbName};" +
+           $"User Id={Uri.UnescapeDataString(userInfo[0])};" +
+           $"Password={Uri.UnescapeDataString(userInfo.Length > 1 ? userInfo[1] : "")};" +
+           $"Ssl Mode=Require;Trust Server Certificate=true";
 }
 
-// ── Cloudinary: register when credentials are present ────────────────────
-var cloudName  = Environment.GetEnvironmentVariable("CLOUDINARY_CLOUD_NAME")
-                 ?? builder.Configuration["Cloudinary:CloudName"];
-var apiKey     = Environment.GetEnvironmentVariable("CLOUDINARY_API_KEY")
-                 ?? builder.Configuration["Cloudinary:ApiKey"];
-var apiSecret  = Environment.GetEnvironmentVariable("CLOUDINARY_API_SECRET")
-                 ?? builder.Configuration["Cloudinary:ApiSecret"];
+var rawConn = builder.Configuration.GetConnectionString("DefaultConnection") ?? "";
+if (!string.IsNullOrWhiteSpace(rawConn))
+    builder.Configuration["ConnectionStrings:DefaultConnection"] = ConvertToNpgsql(rawConn);
 
-var useCloudinary = !string.IsNullOrEmpty(cloudName)
-                 && !string.IsNullOrEmpty(apiKey)
-                 && !string.IsNullOrEmpty(apiSecret);
+// ── JWT key: JWT_KEY env-var overrides appsettings ───────────────────────
+var jwtKey = Environment.GetEnvironmentVariable("JWT_KEY");
+if (!string.IsNullOrEmpty(jwtKey))
+    builder.Configuration["Jwt:Key"] = jwtKey;
+
+// ── Cloudinary ────────────────────────────────────────────────────────────
+var cloudName = Environment.GetEnvironmentVariable("CLOUDINARY_CLOUD_NAME")
+                ?? builder.Configuration["Cloudinary:CloudName"];
+var apiKey    = Environment.GetEnvironmentVariable("CLOUDINARY_API_KEY")
+                ?? builder.Configuration["Cloudinary:ApiKey"];
+var apiSecret = Environment.GetEnvironmentVariable("CLOUDINARY_API_SECRET")
+                ?? builder.Configuration["Cloudinary:ApiSecret"];
+
+bool useCloudinary = !string.IsNullOrWhiteSpace(cloudName)
+                  && !string.IsNullOrWhiteSpace(apiKey)
+                  && !string.IsNullOrWhiteSpace(apiSecret);
 
 if (useCloudinary)
 {
-    var account  = new Account(cloudName, apiKey, apiSecret);
+    var account    = new Account(cloudName, apiKey, apiSecret);
     var cloudinary = new Cloudinary(account) { Api = { Secure = true } };
     builder.Services.AddSingleton(cloudinary);
     builder.Services.AddScoped<Infrastructure.Interfaces.IFileStorageService,
@@ -66,18 +81,16 @@ if (useCloudinary)
 }
 else
 {
-    // Local dev: serve files from wwwroot/uploads
     builder.Services.AddScoped<Infrastructure.Interfaces.IFileStorageService,
                                LocalFileStorageService>();
 }
 
-// ── Logging ───────────────────────────────────────────────────────────────
+// ── Logging ──────────────────────────────────────────────────────────────
 builder.Logging.AddFilter(
     "Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl", LogLevel.None);
-builder.Logging.AddFilter(
-    "WebApi.Handlers.GlobalExceptionHandler", LogLevel.Error);
+builder.Logging.AddFilter("WebApi.Handlers.GlobalExceptionHandler", LogLevel.Error);
 
-// ── Services ──────────────────────────────────────────────────────────────
+// ── Services ─────────────────────────────────────────────────────────────
 builder.Services
     .AddControllers()
     .AddJsonOptions(opt =>
@@ -102,14 +115,12 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.KnownProxies.Clear();
 });
 
-// ── CORS ──────────────────────────────────────────────────────────────────
-// FRONTEND_URL env-var is set on Render with your Vercel URL.
-// Falls back to the array in appsettings.json for local dev.
-var frontendUrl = Environment.GetEnvironmentVariable("FRONTEND_URL");
+// ── CORS ─────────────────────────────────────────────────────────────────
+var frontendUrl    = Environment.GetEnvironmentVariable("FRONTEND_URL");
 var allowedOrigins = string.IsNullOrEmpty(frontendUrl)
     ? builder.Configuration.GetSection("Cors:Origins").Get<string[]>()
       ?? ["http://localhost:5173"]
-    : [frontendUrl, "http://localhost:5173"]; // always allow local dev
+    : [frontendUrl, "http://localhost:5173"];
 
 builder.Services.AddCors(opt =>
     opt.AddPolicy("Frontend", policy =>
@@ -118,12 +129,12 @@ builder.Services.AddCors(opt =>
               .AllowAnyMethod()
               .AllowCredentials()));
 
-// ── App ───────────────────────────────────────────────────────────────────
+// ── App ──────────────────────────────────────────────────────────────────
 var app = builder.Build();
 
 app.UseForwardedHeaders();
 
-// Migrate DB + seed on startup
+// Auto-migrate + seed on startup
 using (var scope = app.Services.CreateScope())
 {
     var db     = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -131,10 +142,10 @@ using (var scope = app.Services.CreateScope())
     var retries = 5;
     while (retries-- > 0)
     {
-        try { await Infrastructure.Data.Seed.DbSeeder.SeedAsync(db); break; }
+        try { await DbSeeder.SeedAsync(db); break; }
         catch (Exception ex) when (retries > 0)
         {
-            logger.LogWarning("DB not ready ({Remaining} retries left): {Msg}", retries, ex.Message);
+            logger.LogWarning("DB not ready ({R} retries left): {M}", retries, ex.Message);
             await Task.Delay(3_000);
         }
     }
