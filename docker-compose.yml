@@ -1,0 +1,57 @@
+services:
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-kamilkarateV2}
+      POSTGRES_USER:     ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-Fa1konm1}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── ASP.NET Core backend ─────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-kamilkarateV2};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-Fa1konm1}"
+      Jwt__Key:                ${JWT_KEY:-ipclwndjskbzsdlsgjkdsacbjdsllnciwnsjlgaefkzwwh}
+      Jwt__Issuer:             kamilkarate-api
+      Jwt__Audience:           kamilkarate-client
+      Jwt__AccessTokenMinutes: "60"
+      Jwt__RefreshTokenDays:   "30"
+      Cors__Origins__0: "http://localhost:${FRONTEND_PORT:-80}"
+      Cors__Origins__1: "${SITE_URL:-http://localhost}"
+    volumes:
+      - uploads_data:/app/wwwroot/uploads
+    ports:
+      - "${BACKEND_PORT:-5218}:5218"
+
+  # ── React / Vite frontend (nginx) ────────────────────────────────────────
+  frontend:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+
+volumes:
+  postgres_data:
+  uploads_data:
