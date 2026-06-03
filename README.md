@@ -1,4 +1,4 @@
-# DeployMarket — Online Health Supplements Store
+# DeployMarket — Full-Stack E-Commerce Platform
 
 A full-stack web application featuring a public product catalog with a customer account area and an admin panel for content management.
 
