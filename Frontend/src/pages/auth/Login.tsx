@@ -12,9 +12,6 @@ function AuthCard({ title, subtitle, children }: { title: string; subtitle: Reac
     <div className="min-h-screen bg-gradient-to-br from-primary-50 to-green-50 flex items-center justify-center px-4 py-12">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <Link to="/" className="inline-flex items-center justify-center mb-6">
-            <span className="text-2xl font-bold text-gray-900">KamilKarate</span>
-          </Link>
           <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
           <p className="text-gray-500 mt-1 text-sm">{subtitle}</p>
         </div>
